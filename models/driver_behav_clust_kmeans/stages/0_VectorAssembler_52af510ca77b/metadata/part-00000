@@ -1,0 +1,1 @@
+{"class":"org.apache.spark.ml.feature.VectorAssembler","timestamp":1730658898018,"sparkVersion":"3.5.3","uid":"VectorAssembler_52af510ca77b","paramMap":{"outputCol":"features","inputCols":["Average Speed","Braking Events","Acceleration Events","Driving during Night (%)"]},"defaultParamMap":{"outputCol":"VectorAssembler_52af510ca77b__output","handleInvalid":"error"}}

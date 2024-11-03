@@ -7,7 +7,8 @@ import time
 from datetime import datetime
 from pyspark.sql import SparkSession
 from pyspark.ml import PipelineModel
-from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import VectorAssembler, StandardScaler
+from pyspark.ml.clustering import KMeansModel
 
 # Initialize Spark session
 spark = SparkSession.builder \
@@ -16,6 +17,7 @@ spark = SparkSession.builder \
 
 # Load the pre-trained pipeline model
 rf_model_risk = PipelineModel.load("models/risk_pred_rf")
+kmeans_driver_behavior = PipelineModel.load("/home/skidrow/bigdata_project/models/driver_behav_clust_kmeans")
 
 # Set up Kafka consumer
 consumer = KafkaConsumer(
@@ -55,7 +57,17 @@ def prepare_features_for_risk_model(data):
 # Placeholder for labeled prediction results
 prediction_results_placeholder = st.empty()
 
-# Function to render the latest data as a highlighted HTML row in a scrollable box
+def prepare_features_for_clustering(data):
+    feature_columns_clustering = ['Average Speed', 'Braking Events', 'Acceleration Events', 'Driving during Night (%)']
+    
+    if 'features' not in data.columns:
+        assembler = VectorAssembler(inputCols=feature_columns_clustering, outputCol="features")
+        data = assembler.transform(data)
+    if 'scaledFeatures' not in data.columns:
+        scaler = StandardScaler(inputCol="features", outputCol="scaledFeatures")
+        data = scaler.fit(data).transform(data)
+    return data
+
 # Function to render the latest data as a highlighted HTML row in a scrollable box
 def render_highlighted_row(row_data):
     row_html = f"""
@@ -75,6 +87,7 @@ def display_prediction_results(predictions):
     <div style="margin-top: 10px; padding: 10px; background-color: #2c2f33; border-radius: 5px;">
         <h4 style="color: #e0e0e0;">Prediction Results</h4>
         <p style="color: #e0e0e0;">Accident Risk Prediction: <strong>{"High" if predictions['risk'] else "Low"}</strong></p>
+        <p style="color: #e0e0e0;">Driver Behavior Cluster: <strong>{predictions['cluster']}</strong></p>
     </div>
     """
     prediction_results_placeholder.markdown(prediction_html, unsafe_allow_html=True)
@@ -92,6 +105,10 @@ with col2:
     acc_events_bar = st.empty()  # Placeholder for acceleration events by vehicle type
 
 fuel_eff_scatter = st.empty()  # Placeholder for fuel efficiency vs. engine load scatter plot
+
+scatter_cluster_chart = st.empty() 
+
+cluster_data = pd.DataFrame(columns=['Average Speed', 'Acceleration Events', 'Cluster'])
 
 
 # Function to handle streaming data
@@ -152,13 +169,46 @@ def stream_data():
 
         # Use the risk prediction model to get predictions
         risk_prediction = rf_model_risk.transform(spark_data_with_features).select("prediction").collect()[0][0]
+        
+        
+        # spark_data_for_clustering = prepare_features_for_clustering(spark_data)
+        # print(spark_data_for_clustering)
+
+        cluster_prediction = kmeans_driver_behavior.transform(spark_data).select("prediction").collect()[0][0]
+
+        # Convert the Spark DataFrame to Pandas for scatter plot
+        cluster_point = spark_data.select("Average Speed", "Acceleration Events").toPandas()
+        cluster_point["Cluster"] = cluster_prediction
+
+        global cluster_data
+        cluster_data = pd.concat([cluster_data, cluster_point], ignore_index=True)
+
+        
 
         # Add the prediction to the latest data row and highlight it
         latest_row = new_data.iloc[0].to_dict()
         latest_row['Accident Risk Prediction'] = 'High' if risk_prediction else 'Low'
-        display_prediction_results({'risk': risk_prediction})
+        latest_row['Driver Behavior Cluster'] = f"Cluster {cluster_prediction}"
+    
+        display_prediction_results({
+        'risk': risk_prediction,
+        'cluster': f"Cluster {cluster_prediction}"
+    })
 
         render_highlighted_row(list(latest_row.values()))
+
+        # Create a scatter plot to visualize the clusters
+        fig_scatter_cluster = px.scatter(
+            cluster_data, x="Average Speed", y="Acceleration Events", 
+            color="Cluster", title="Driver Behavior Cluster Scatter Plot",
+            labels={"Average Speed": "Average Speed", "Acceleration Events": "Acceleration Events"},
+            opacity=0.7
+        )
+        fig_scatter_cluster.update_traces(marker=dict(size=10, line=dict(width=1, color="DarkSlateGrey")))
+        fig_scatter_cluster.update_layout(legend_title="Cluster")
+        
+        scatter_cluster_chart.plotly_chart(fig_scatter_cluster, use_container_width=True)
+
 
         # Adding a slight delay to reduce data processing load
         time.sleep(0.4)
